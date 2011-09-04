@@ -1,0 +1,1 @@
+SUBSYSTEM=="usb", DRIVER=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="c630", ATTR{manufacturer}=="Lcdmod Kit", ATTR{product}=="LCD2USB", SYMLINK+="lcd2usb", GROUP="users"
