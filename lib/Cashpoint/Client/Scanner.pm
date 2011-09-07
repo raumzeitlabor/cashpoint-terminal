@@ -13,7 +13,6 @@ use Data::Dumper;
 
 sub new {
     my ($class, $device) = @_;
-
     my $self = {};
 
     my $dev = Device::SerialPort->new($device) or croak $!;
@@ -44,7 +43,8 @@ sub new {
 
     $self->{reader} = sub {
         my ($handle, $code) = @_;
-        $self->{scan_cb}->($code);
+        $self->{scan_cb}->($code) if $self->{scan_cb};
+        carp "no scan callback defined" unless $self->{scan_cb};
         $self->{scan_handle}->push_read(line => "\r", $self->{reader});
     };
 
