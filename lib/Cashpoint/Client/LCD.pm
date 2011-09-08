@@ -35,47 +35,112 @@ sub new {
     );
 
     my $self = {
-        scrollback => [],
+        scrollbuffer => [],
+        toplineptr => 0,
+        currline   => 1,
         width      => $width,
         height     => $height,
         handle     => $lcd_handle,
-        lineptr    => 0,
     };
 
     bless $self, $class;
-    $self->clear;
     return $self;
+};
+
+sub scrollbuffer_size {
+    my $self = shift;
+    return scalar @{$self->{scrollbuffer}};
+}
+
+sub reset {
+    my $self = shift;
+    for (1..$self->{height}) {
+        $self->{handle}->push_write(" " x $self->{width}."\n");
+    }
+    $self->{scrollbuffer} = [];
+    $self->{toplineptr} = 0;
 };
 
 sub clear {
     my $self = shift;
-    $self->{handle}->push_write("\n" x $self->{height});
-    $self->{scrollback} = [];
-    $self->{lineptr} = 0;
+    $self->append("") for (1..$self->{height});
+    $self->flush;
 };
 
 sub append {
-    my ($self, $msg) = shift;
-    $self->{handle}->push_write($msg);
-    $self->{lineptr}++ if (@{$self->{scrollback}} > $self->{height});
+    my ($self, $msg) = @_;
+
+    # pad the message to be appended to the full lcd width
+    push @{$self->{scrollbuffer}}, $msg." " x ($self->{width} - length $msg);
+
+    # if there is enough data in the scrollbuffer, scroll down one line
+    if ($self->scrollbuffer_size > $self->{height}) {
+        $self->{toplineptr}++;
+    }
+
+    $self->flush;
 };
 
 sub new_line {
     my $self = shift;
     $self->{handle}->push_write("\n");
-    $self->{lineptr}++ if (@{$self->{scrollback}} > $self->{height});
+};
+
+sub scroll {
+    my ($self, $lines) = @_;
+    if ($lines < 0) {
+        if ($self->{toplineptr} + $lines < 0) {
+            $self->scroll_top;
+        } else {
+            $self->{toplineptr} += $lines;
+            $self->flush;
+        }
+    } else {
+        if ($self->{toplineptr} + $lines > $self->scrollbuffer_size) {
+            $self->scroll_bottom;
+        } else {
+            $self->{toplineptr} += $lines;
+            $self->flush;
+        }
+    }
+};
+
+sub scroll_top {
+    my $self = shift;
+    $self->{toplineptr} = 0;
+    $self->flush;
+};
+
+sub scroll_bottom {
+    my $self = shift;
+    $self->{toplineptr} = $self->scrollbuffer_size - $self->{height};
+    $self->flush;
+};
+
+sub flush {
+    my $self = shift;
+    my @scrollbuffer = @{$self->{scrollbuffer}};
+
+    # calculate visible part
+    my $from = $self->{toplineptr};
+    my $to   = $from+$self->{height}-1;
+    my @visible_scrollbuffer = @scrollbuffer[$from..$to];
+
+    # flush it to the process
+    $self->{handle}->push_write(
+        join("\n", map { $_ // ' ' x $self->{height} } @visible_scrollbuffer)."\n"
+    );
 };
 
 sub show {
     my ($self, $key, $msg) = @_;
-    my @scrollback = @{$self->{scrollback}};
+    my @scrollbuffer = @{$self->{scrollbuffer}};
 
     if ($key !~ /^\d+[clr]?e?$/) {
         carp 'invalid hash key, skipping' if $key !~ /^\d+$/;
         next;
     }
 
-    my $line;
     my ($lineno, $format, $empty) = ($key =~ /^(\d+)([clr]?)(e)?$/);
 
     if ($lineno > $self->{height}) {
@@ -83,36 +148,40 @@ sub show {
         return;
     }
 
-    # enlarge scrollback if necessary
-    $#scrollback = $lineno - 1 if (@scrollback < $lineno);
+    # enlarge scrollbuffer if necessary
+    $#scrollbuffer = $lineno - 1 if ($self->scrollbuffer_size < $lineno);
 
     # figure out what the desired line currently looks like
-    my $currline = $empty ? undef : $scrollback[$self->{lineptr}+$lineno-1];
+    # if empty was requested, we'll comply :-)
+    my $currline = $empty ? undef : $scrollbuffer[$self->{toplineptr}+$lineno-1];
     $currline =  ' ' x $self->{width} unless $currline;
 
+    # do the requested formatting
+    my $line;
+
+    # align left
     if ($format eq '' || $format && $format eq 'l') {
         $line = $msg . substr($currline, length($msg));
+
+    # center
     } elsif ($format && $format eq 'c') {
         my $space_left = $self->{width} - length $msg;
         my $lspace = int($space_left/2);
         my $rspace = $space_left/2 == $lspace ? $lspace : $space_left - $lspace;
         $line = substr($currline, 0, $lspace).$msg.
                 substr($currline, length $msg, $rspace);
+
+    # align right
     } elsif ($format && $format eq 'r') {
         $line = substr($currline, 0, $self->{width}-length($msg)).$msg;
     }
 
-    $scrollback[$self->{lineptr}+$lineno-1] = $line;
-    $self->{scrollback} = \@scrollback;
+    # save the formatted line in the scrollbuffer
+    $scrollbuffer[$self->{toplineptr}+$lineno-1] = $line;
+    $self->{scrollbuffer} = \@scrollbuffer;
 
-    # if there are not enough lines in the scrollback buffer, use what we have
-    my @visible_scrollback = @scrollback[$self->{lineptr}..$self->{lineptr}+$self->{height}-1];
-    print Dumper \@visible_scrollback;
-    $self->{handle}->push_write(
-        join("\n", map { $_ // '' } @visible_scrollback)
-    );
-
-    print "#"x40; print "\n";
+    # write the new scrollbuffer to the display
+    $self->flush;
 }
 
 42;
