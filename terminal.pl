@@ -52,7 +52,7 @@ sub scan_dispatcher {
     my $code = shift;
 
     if ($mode eq MODE_START && $code =~ m/^#[a-z0-9]{18}$/i) {
-        $context{cashcard} = $code;
+        $context{cashcard} = substr($code, 1);
         read_pin();
     } elsif ($mode eq MODE_AUTH && $code =~ m/^#[a-z0-9]{18}$/i) {
     } elsif ($mode eq MODE_AUTHED && $code =~ m/^F{1,2}([0-9]{8}|[0-9]{12})$/) {
@@ -116,7 +116,7 @@ sub read_pin {
 sub authenticate {
     my $pin = shift;
 
-    $client->auth($context{code}, $pin, sub {
+    $client->auth($context{cashcard}, $pin, sub {
         my ($success, $user, $role, $auth) = @_;
 
         $lcd->show("3ce", "");
@@ -135,17 +135,18 @@ sub authenticate {
 
             if ($reason eq '401') {
                 $lcd->show("2ce", "Authorization Failed!");
-                push @heap, AnyEvent->timer(after => TIMEOUT_RETRY, cb => sub {
-                    start();
-                });
+            } elsif ($reason eq '403') {
+                $lcd->show("2ce", "There have been too many failed logins.");
+                $lcd->show("3ce", "Please try again in five minutes.");
             } else {
                 $lcd->show("2ce", "Uh-oh, there seems to be a problem!");
                 $lcd->show("3ce", "Please try again later. Thank you.");
-
-                push @heap, AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
-                    start();
-                });
             }
+
+            push @heap, AnyEvent->timer(after => TIMEOUT_RETRY, cb => sub {
+                return if $mode == MODE_START;
+                start();
+            });
         }
     });
 };
@@ -172,6 +173,7 @@ sub create_basket {
             $lcd->show("3ce", "Sorry, please try again later.");
 
             push @heap, AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
+                return if $mode == MODE_START;
                 start();
             });
         }
