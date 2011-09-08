@@ -14,6 +14,7 @@ sub new {
     my ($class, $path) = @_;
     my $self = {
         path => $path,
+        cb   => undef,
     };
 
     unless (-p $path) {
@@ -41,7 +42,7 @@ sub new {
         },
         on_read => sub {
             my $handle = shift;
-            print $handle->rbuf;
+            &{$self->{cb}}($handle->rbuf) if $self->{cb};
             $handle->rbuf = "";
         },
     );
@@ -52,6 +53,16 @@ sub new {
 sub remove_fifo {
     my $self = shift;
     unlink($self->{fifopath});
+}
+
+sub on_read {
+    my ($self, $cb) = @_;
+    $self->{cb} = $cb;
+}
+
+sub reset_cb {
+    my $self = shift;
+    $self->{cb} = undef;
 }
 
 42;

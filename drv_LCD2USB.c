@@ -252,13 +252,13 @@ int buffer_current_type = -1;	/* nothing in buffer yet */
 int buffer_current_fill = 0;	/* -"- */
 unsigned char buffer[BUFFER_MAX_CMD];
 
-/* command format: 
+/* command format:
  * 7 6 5 4 3 2 1 0
  * C C C T T R L L
  *
- * TT = target bit map 
+ * TT = target bit map
  * R = reserved for future use, set to 0
- * LL = number of bytes in transfer - 1 
+ * LL = number of bytes in transfer - 1
  */
 
 /* flush command queue due to buffer overflow / content */
@@ -401,18 +401,20 @@ int main(int argc, char *argv[]) {
 		return 0;
 	}
 	drv_L2U_start();
+    drv_L2U_clear();
 	int line = 0;
 	while (1) {
-		char buffer[41];
+		char buffer[40];
 		int n, pos = 0;
 
 		/* Read up to '\n' or DCOLS characters, whichever occurs earlier */
-		while (((n = read(0, buffer + pos, 1)) > 0) && (pos < DCOLS)) {
+		while (((n = read(0, buffer + pos, 1)) > 0) && (pos <= DCOLS)) {
 			pos++;
 			if (buffer[pos-1] == '\n')
 				break;
 		}
-		buffer[pos-1] = '\0';
+
+        buffer[pos-1] = '\0';
 
 		if (n == 0) {
 			/* on EOF, flush and exit */
@@ -424,8 +426,7 @@ int main(int argc, char *argv[]) {
 		if (n < 0)
 			return 1;
 
-		drv_L2U_write(line, 0, buffer, strlen(buffer));
-		line++;
+		drv_L2U_write(line++, 0, buffer, strlen(buffer));
 		if (line != 0 && (line % 4) == 0) {
 			line = 0;
 			//drv_L2U_clear();

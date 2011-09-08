@@ -62,9 +62,9 @@ sub reset {
 };
 
 sub clear {
-    my $self = shift;
+    my ($self, $noflush) = @_;
     $self->append("") for (1..$self->{height});
-    $self->flush;
+    $self->flush unless $noflush;
 };
 
 sub append {
@@ -79,6 +79,9 @@ sub append {
     }
 
     $self->flush;
+
+    # using this information, lines can be changed afterwards
+    return $self->{toplineptr}-1 % $self->{width};
 };
 
 sub new_line {
@@ -147,6 +150,9 @@ sub show {
         carp 'invalid line numer';
         return;
     }
+
+    # make sure the line is not too long
+    $msg = substr($msg, 0, $self->{width}) if length $msg > $self->{width};
 
     # enlarge scrollbuffer if necessary
     $#scrollbuffer = $lineno - 1 if ($self->scrollbuffer_size < $lineno);
