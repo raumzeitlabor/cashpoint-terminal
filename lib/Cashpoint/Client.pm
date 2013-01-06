@@ -122,25 +122,6 @@ sub create_group {
     }, $cb);
 }
 
-sub add_group_member {
-    my ($self, $group, $user, $cb) = @_;
-    return $self->generic(POST => "/groups/$group/memberships", {
-        user => $user,
-    }, $cb);
-}
-
-sub get_group_members {
-    my ($self, $group, $cb) = @_;
-    return $self->generic(GET => "/groups/$group/memberships", undef, $cb);
-}
-
-sub remove_group_member {
-    my ($self, $group, $user, $cb) = @_;
-    return $self->generic(DELETE => "/groups/$group/memberships", {
-        user => $user,
-    }, $cb);
-}
-
 # cashcard create, unlock, enable, disable, credit, transfer
 
 sub register_cashcard {
