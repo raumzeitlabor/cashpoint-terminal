@@ -7,32 +7,17 @@ use Carp;
 use AnyEvent;
 use AnyEvent::Run;
 
-use Data::Dumper;
+use LCD2USB::Wrapper;
 
-my $lcd_handle;
+use Data::Dumper;
 
 sub new {
     my ($class, $name, $format) = @_;
 
+    l2u_open() or carp 'could not find a display';
+
     carp 'invalid format' if ($format !~ /^\d+x\d+$/);
     my ($height, $width) = ($format =~ /^(\d+)x(\d+)$/);
-
-    $lcd_handle = AnyEvent::Run->new(
-        cmd      => [ $name, ],
-        on_error  => sub {
-            my ($handle, $fatal, $msg) = @_;
-            if ($fatal) {
-                $handle->destroy;
-                croak "Fatal error";
-            }
-            carp "Error: $!";
-        },
-        on_eof => sub {
-            my $handle = shift;
-            $handle->destroy;
-            croak "LCD disconnected.";
-        },
-    );
 
     my $self = {
         scrollbuffer => [],
@@ -40,7 +25,6 @@ sub new {
         currline   => 1,
         width      => $width,
         height     => $height,
-        handle     => $lcd_handle,
     };
 
     bless $self, $class;
@@ -55,7 +39,7 @@ sub scrollbuffer_size {
 sub reset {
     my $self = shift;
     for (1..$self->{height}) {
-        $self->{handle}->push_write(" " x $self->{width}."\n");
+        l2u_write(0, $_ - 1, " " x $self->{width});
     }
     $self->{scrollbuffer} = [];
     $self->{toplineptr} = 0;
@@ -82,11 +66,6 @@ sub append {
 
     # using this information, lines can be changed afterwards
     return $self->{toplineptr}-1 % $self->{width};
-};
-
-sub new_line {
-    my $self = shift;
-    $self->{handle}->push_write("\n");
 };
 
 sub scroll {
@@ -130,9 +109,9 @@ sub flush {
     my @visible_scrollbuffer = @scrollbuffer[$from..$to];
 
     # flush it to the process
-    $self->{handle}->push_write(
-        join("\n", map { $_ // ' ' x $self->{height} } @visible_scrollbuffer)."\n"
-    );
+    for (1..$self->{height}) {
+        l2u_write(0, $_ - 1, $visible_scrollbuffer[$_] // " " x $self->{width});
+    }
 };
 
 sub show {
