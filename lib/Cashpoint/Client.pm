@@ -8,6 +8,8 @@ use AnyEvent::HTTP;
 
 use Data::Dumper;
 
+our $VERSION = '0.01';
+
 sub new {
     my ($class, $baseurl) = @_;
     my $self = {
@@ -16,46 +18,208 @@ sub new {
     return bless $self, $class;
 }
 
-sub auth {
-    my ($self, $cashcard, $pin, $cb) = @_;
+# generic http request dispatcher
+# can be used both async- and synchronously
+sub generic {
+    my ($self, $method, $path, $payload, $cb) = @_;
 
-    print Dumper to_json({code => $cashcard, pin => $pin});
+    my %headers = ();
+    $headers{'Content-Type'} = 'application/json' if $payload;
 
-    http_request(
-        POST    => $self->{baseurl}."/auth",
-        headers => {
-            'Content-Type' => 'application/json',
-        },
-        timeout => 5,
-        body => to_json({code => $cashcard, pin => $pin}),
-        sub {
-            my ($body, $hdr) = @_;
-            print Dumper $body, $hdr;
+    # add auth info, if available
+    if (defined $self->{session}) {
+        $headers{'auth_token'} = $self->{session}->{auth_token};
+    }
 
-            if ($hdr->{Status} eq '200') {
-                my $auth_info = from_json($body);
-                &$cb(1, $auth_info->{user}, $auth_info->{role}, $auth_info->{auth_token});
-            } else {
-                &$cb(0, $hdr->{Status});
-            }
+    # build request
+    my $httpr = [
+        headers    => \%headers,
+        timeout    => 10,
+    ];
+
+    push @$httpr, (body => to_json($payload)) if $payload;
+    print "HEADER: ".Dumper $httpr if $self->{debug};
+
+    # do the request
+    my ($data, $status);
+    my $cv = AE::cv;
+    http_request(uc $method => $self->{baseurl}.$path, @$httpr, sub {
+        my ($body, $hdr) = @_;
+
+        print Dumper $hdr, $body if $self->{debug};
+
+        if ($hdr->{Status} =~ m/^20[01]/) {
+            $data = from_json($body) if $body;
+            &$cb(1, $data) if $cb;
+            $status = 1;
+        } else {
+            $status = 0;
+            &$cb(0, undef) if $cb;
         }
-    );
+
+        $cv->send unless $cb;
+    });
+
+    # if no callback is defined, work synchronously
+    $cv->recv unless $cb;
+
+    # return payload if no data is returned
+    return ($status, $data);
+}
+
+# synchronous
+sub auth_by_pin {
+    my ($self, $cashcard, $pin) = @_;
+    my ($s, $r) = $self->generic(POST => '/auth', {
+        code => $cashcard,
+        pin  => $pin,
+    });
+
+    $self->{session} = $r if $r;
+    return ($s, $r);
 };
 
+sub auth_by_passwd {
+    my ($self, $username, $passwd) = @_;
+    my ($s, $r) = $self->generic(POST => '/auth', {
+        username => $username,
+        passwd   => $passwd,
+    });
+
+    $self->{session} = $r if $r;
+    return ($s, $r);
+};
+
+sub logout {
+    my ($self, $cb) = @_;
+    return $self->generic(DELETE => '/auth', undef, $cb);
+}
+
+# bothchronous
+sub get_products {
+    my ($self, $cb) = @_;
+    return $self->generic(GET => '/products', undef, $cb);
+}
+
+sub add_product {
+    my ($self, $name, $ean, $threshold, $cb) = @_;
+    return $self->generic(POST => '/products', {
+        name => $name,
+        ean  => '4029764001807',
+    }, $cb);
+}
+
+sub get_product {
+    my ($self, $ean, $cb) = @_;
+    return $self->generic(GET => "/products/$ean", undef, $cb);
+}
+
+# groups create, delete
+sub create_group {
+    my ($self, $name, $cb) = @_;
+    return $self->generic(POST => '/groups', {
+        name => $name,
+    }, $cb);
+}
+
+sub add_group_member {
+    my ($self, $group, $user, $cb) = @_;
+    return $self->generic(POST => "/groups/$group/memberships", {
+        user => $user,
+    }, $cb);
+}
+
+sub get_group_members {
+    my ($self, $group, $cb) = @_;
+    return $self->generic(GET => "/groups/$group/memberships", undef, $cb);
+}
+
+sub remove_group_member {
+    my ($self, $group, $user, $cb) = @_;
+    return $self->generic(DELETE => "/groups/$group/memberships", {
+        user => $user,
+    }, $cb);
+}
+
+# cashcard create, unlock, enable, disable, credit, transfer
+
+sub register_cashcard {
+    my ($self, $user, $group, $code, $pin, $cb) = @_;
+    return $self->generic(POST => '/cashcards', {
+        user  => $user,
+        group => $group,
+        code  => $code,
+        pin   => $pin,
+    }, $cb);
+}
+
+sub unlock_cashcard {
+    my ($self, $code, $pin, $cb) = @_;
+    return $self->generic(PUT => "/cashcards/$code", {
+        pin => $pin,
+    }, $cb);
+}
+
+sub enable_cashcard {
+    my ($self, $code, $cb) = @_;
+    return $self->generic(PUT => "/cashcards/$code/enable", undef, $cb);
+}
+
+sub disable_cashcard {
+    my ($self, $code, $cb) = @_;
+    return $self->generic(PUT => "/cashcards/$code/disable", undef, $cb);
+}
+
+sub get_cashcard_credits {
+    my ($self, $code, $cb) = @_;
+    return $self->generic(GET => "/cashcards/$code/credits", undef, $cb);
+}
+
+sub charge_cashcard {
+    my ($self, $code, $amount, $remark, $type, $cb) = @_;
+    return $self->generic(POST => "/cashcards/$code/credits", {
+        type   => $type,
+        remark => $remark,
+        amount => $amount,
+    }, $cb);
+}
+
+sub transfer_credits {
+    my ($self, $from, $to, $amount, $reason, $cb) = @_;
+    return $self->generic(POST => "/cashcards/$code/credits", {
+        recipient => $to,
+        amount    => $amount,
+        reason    => $reason,
+    }, $cb);
+}
+
+sub get_transfers {
+    my ($self, $code, $cb) = @_;
+    return $self->generic(GET => "/cashcards/$code/transfers", undef, $cb);
+}
+
+# basket
 sub create_basket {
-    my ($self, $auth, $cb) = @_;
-
-    http_request(
-        POST    => $self->{baseurl}."/baskets?auth=".$auth,
-        headers => {
-            'Content-Type' => 'application/json',
-        },
-        timeout => 5,
-        sub {
-            my ($body, $hdr) = @_;
-            print Dumper $body, $hdr;
-        }
-    );
+    my ($self, $cb) = @_;
+    return $self->generic(POST => '/baskets', undef, $cb);
 };
+
+sub delete_basket {
+    my ($self, $basket, $cb) = @_;
+    return $self->generic(DELETE => "/baskets/$basket", undef, $cb);
+}
+
+# delete, checkout basket
+sub get_items {
+    my ($self, $basket, $cb) = @_;
+    return $self->generic(GET => "/baskets/$basket/items", undef, $cb);
+}
+
+sub add_item {
+    my ($self, $basket, $ean, $cb) = @_;
+    return $self->generic(POST => "/baskets/$basket/items", {
+        ean => $ean,
+    }, $cb);
+}
 
 42;
