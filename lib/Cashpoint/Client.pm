@@ -167,7 +167,7 @@ sub charge_cashcard {
 
 sub transfer_credits {
     my ($self, $from, $to, $amount, $reason, $cb) = @_;
-    return $self->generic(POST => "/cashcards/$code/credits", {
+    return $self->generic(POST => "/cashcards/$from/transfers", {
         recipient => $to,
         amount    => $amount,
         reason    => $reason,
