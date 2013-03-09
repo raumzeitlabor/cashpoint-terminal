@@ -41,20 +41,20 @@ sub generic {
     print "HEADER: ".Dumper $httpr if $self->{debug};
 
     # do the request
-    my ($data, $status);
+    my $data;
+    my $hdr;
     my $cv = AE::cv;
     http_request(uc $method => $self->{baseurl}.$path, @$httpr, sub {
-        my ($body, $hdr) = @_;
+        my $body = shift;
+        $hdr = shift;
 
         print Dumper $hdr, $body if $self->{debug};
 
         if ($hdr->{Status} =~ m/^20[01]/) {
             $data = from_json($body) if $body;
-            &$cb(1, $data) if $cb;
-            $status = 1;
+            &$cb($hdr->{Status}, $data) if $cb;
         } else {
-            $status = 0;
-            &$cb(0, undef) if $cb;
+            &$cb($hdr->{Status}, undef) if $cb;
         }
 
         $cv->send unless $cb;
@@ -64,7 +64,7 @@ sub generic {
     $cv->recv unless $cb;
 
     # return payload if no data is returned
-    return ($status, $data);
+    return ($hdr->{Status}, $data);
 }
 
 # synchronous

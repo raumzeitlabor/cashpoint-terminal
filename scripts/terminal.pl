@@ -9,25 +9,27 @@ use EV;
 use Carp;
 use AnyEvent;
 
+use Data::Dumper;
+use Log::Log4perl qw(:easy);
+
 use Device::SerialPort;
 
 use Cashpoint::Client;
 use Cashpoint::Client::LCD;
 use Cashpoint::Client::SerialInput;
 
+$| = 1;
+
+# state machine
 use constant {
     MODE_START    => 0,
     MODE_AUTH     => 1,
     MODE_AUTHED   => 2,
-    MODE_BASKET   => 3,
-    MODE_SHOPPING => 4,
 
     TIMEOUT_PIN   => 5,     # time until the pin input will time out
     TIMEOUT_RETRY => 5,     # time after which a failed auth can be started again
     TIMEOUT_ERROR => 15,    # time a fatal error message will be shown
 };
-
-$| = 1;
 
 my $mode = MODE_START;
 
@@ -43,8 +45,10 @@ my %context = (
     auth     => undef,
 );
 
+##################################################
+
 # client library
-my $client = Cashpoint::Client->new("http://localhost:3000");
+my $client = Cashpoint::Client->new("http://172.22.37.76:3000");
 
 # lcd output
 my $lcd = Cashpoint::Client::LCD->new('4x40');
@@ -89,12 +93,24 @@ my $rfid = Cashpoint::Client::SerialInput->new($dev, [chunk => 14]);
 $rfid->on_recv(sub {
     my $code = shift;
 
+    # XXX: chksum prüfen
     if ($mode eq MODE_START) {# && $code =~ m/^#[a-z0-9]{18}$/i) {
-        $context{cashcard} = substr($code, 1);
+        $context{cashcard} = substr($code);
         read_pin();
     }
 });
 
+##################################################
+# General Flow:
+# 1. Either RFID or Scanner callback gets triggered.
+#    State == MODE_START
+# 2. read_pin is called
+#    State == MODE_AUTH
+#
+#    on success:
+#    State == MODE_AUTHED
+# 3. create_basket creates an empty basket
+# 4. Each SCAN add $product to basket.
 ##################################################
 
 sub start {
@@ -107,7 +123,7 @@ sub start {
 
 sub read_pin {
     my $code = shift;
-    my ($cb, $pin, $timer);
+    my ($cb, $pin, $timer) = (undef, "");
 
     $lcd->show("2ce", "Please enter your PIN:");
 
@@ -151,49 +167,49 @@ sub read_pin {
 sub authenticate {
     my $pin = shift;
 
-    $client->auth($context{cashcard}, $pin, sub {
-        my ($success, $user, $role, $auth) = @_;
+    my ($s, $r) = $client->auth_by_pin($context{cashcard}, $pin);
+    $lcd->show("3ce", "");
 
-        $lcd->show("3ce", "");
-        if ($success) {
-            # save the context information
-            @context{qw/user role auth/} = ($user, $role, $auth);
+    if ($s eq '200') {
+        # save the context information
+        @context{qw/user role auth/} = (
+            $r->{user}->{id},
+            $r->{role},
+            $r->{auth_token}
+        );
 
-            # display appropriate information
-            $lcd->show("2ce", "Successfully Authorized");
+        # display appropriate information
+        $lcd->show("2ce", "Successfully Authorized");
 
-            # try to create a basket
-            create_basket();
+        # try to create a basket
+        create_basket();
+
+    } else {
+        if ($s eq '401') {
+            $lcd->show("2ce", "Authorization Failed!");
+        } elsif ($s eq '403') {
+            $lcd->show("2ce", "There have been too many failed logins.");
+            $lcd->show("3ce", "Please try again in five minutes.");
         } else {
-            # in case the auth was not successful, $user turns into $reason
-            my $reason = $user;
-
-            if ($reason eq '401') {
-                $lcd->show("2ce", "Authorization Failed!");
-            } elsif ($reason eq '403') {
-                $lcd->show("2ce", "There have been too many failed logins.");
-                $lcd->show("3ce", "Please try again in five minutes.");
-            } else {
-                $lcd->show("2ce", "Uh-oh, there seems to be a problem!");
-                $lcd->show("3ce", "Please try again later. Thank you.");
-            }
-
-            push @heap, AnyEvent->timer(after => TIMEOUT_RETRY, cb => sub {
-                return if $mode == MODE_START;
-                start();
-            });
+            $lcd->show("2ce", "Uh-oh, there seems to be a problem!");
+            $lcd->show("3ce", "Please try again later. Thank you.");
         }
-    });
+
+        push @heap, AnyEvent->timer(after => TIMEOUT_RETRY, cb => sub {
+            return if $mode == MODE_START;
+            start();
+        });
+    }
 };
 
 sub create_basket {
     # try to create a basket
-    $client->create_basket($context{auth}, sub {
-        my ($success, $id) = @_;
+    $client->create_basket(sub {
+        my ($s, $r) = @_;
 
-        if ($success) {
+        if ($s eq '201') {
             $mode = MODE_AUTHED;
-            $context{basket} = $id;
+            $context{basket} = $r->{id};
 
             # if the user hasn't started scanning yet, tell him
             push @heap, AnyEvent->timer(after => 3, cb => sub {
@@ -219,14 +235,13 @@ sub add_product {
     my $code = shift;
 
     $client->add_product($context{auth}, $context{basket}, $code, sub {
-        my ($success, $name, $price) = @_;
-
-        if ($success) {
-            my $line = $lcd->append($name);
-            $lcd->show($line."r", " ".$price." EUR");
+        my ($s, $r) = @_;
+        if ($s eq '201') {
+            my $line = $lcd->append($r->{name});
+            $lcd->show($line."r", " ".$r->{price}." EUR");
         } else {
-            # in case of an error, $name turns into $reason
-            my $reason = $name;
+            $lcd->show("2ce", "WHY U NO WORKING");
+            $lcd->show("3ce", "Sorry, please try again later.");
         }
     });
 };

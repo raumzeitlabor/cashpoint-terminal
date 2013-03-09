@@ -7,7 +7,8 @@ license  'perl';
 
 build_requires 'Test::More';
 
-requires 'JSON';
+requires 'JSON::XS';
+requires 'Log::Log4perl';
 requires 'AnyEvent::HTTP';
 requires 'Device::SerialPort';
 
