@@ -95,7 +95,7 @@ $rfid->on_recv(sub {
 
     # XXX: chksum prüfen
     if ($mode eq MODE_START) {# && $code =~ m/^#[a-z0-9]{18}$/i) {
-        $context{cashcard} = substr($code);
+        $context{cashcard} = $code;
         read_pin();
     }
 });
