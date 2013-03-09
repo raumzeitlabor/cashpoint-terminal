@@ -11,9 +11,10 @@ use LCD2USB::Wrapper;
 use Data::Dumper;
 
 sub new {
-    my ($class, $name, $format) = @_;
+    my ($class, $format) = @_;
 
-    l2u_open() or carp 'could not find a display';
+    my $r = l2u_open();
+    carp 'could not find a display' if ($r == -1);
 
     carp 'invalid format' if ($format !~ /^\d+x\d+$/);
     my ($height, $width) = ($format =~ /^(\d+)x(\d+)$/);
