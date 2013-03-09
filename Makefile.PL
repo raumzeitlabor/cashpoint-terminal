@@ -8,7 +8,7 @@ license  'perl';
 build_requires 'Test::More';
 
 requires 'JSON';
-requires 'Anyevent::HTTP';
+requires 'AnyEvent::HTTP';
 
 auto_install;
 
