@@ -9,6 +9,7 @@ build_requires 'Test::More';
 
 requires 'JSON';
 requires 'AnyEvent::HTTP';
+requires 'Device::SerialPort';
 
 auto_install;
 
