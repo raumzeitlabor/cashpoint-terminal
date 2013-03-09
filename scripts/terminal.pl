@@ -46,17 +46,20 @@ my %context = (
 # client library
 my $client = Cashpoint::Client->new("http://localhost:3000");
 
+# lcd output
+my $lcd = Cashpoint::Client::LCD->new('4x40');
+
 # pinpad input
-my $dev = Device::SerialPort->new('/dev/pinpad') or croak $!;
+my $dev = Device::SerialPort->new('/dev/ttyUSB3') or croak $!;
 $dev->baudrate(9600);
 $dev->databits(8);
 $dev->parity("none");
 $dev->stopbits(1);
 
-my $pinpad = Cashpoint::Client::SerialInput->new($dev);
+my $pinpad = Cashpoint::Client::SerialInput->new($dev, [chunk => 1]);
 
 # scanner input
-$dev = Device::SerialPort->new('/dev/scanner') or croak $!;
+$dev = Device::SerialPort->new('/dev/ttyUSB0') or croak $!;
 $dev->baudrate(9600);
 $dev->databits(8);
 $dev->parity("none");
@@ -67,16 +70,30 @@ $scanner->on_recv(sub {
     my $code = shift;
 
     if ($mode eq MODE_START && $code =~ m/^#[a-z0-9]{18}$/i) {
-        $context{cashcard} = substr($code, 1);
-        read_pin();
+        #$context{cashcard} = substr($code, 1);
+        #read_pin();
     } elsif ($mode eq MODE_AUTH && $code =~ m/^#[a-z0-9]{18}$/i) {
     } elsif ($mode eq MODE_AUTHED && $code =~ m/^F{1,2}([0-9]{8}|[0-9]{12})$/) {
         add_product($code);
     }
 });
 
-# lcd output
-my $lcd = Cashpoint::Client::LCD->new('4x40');
+# rfid reader
+$dev = Device::SerialPort->new('/dev/ttyUSB2') or croak $!;
+$dev->baudrate(9600);
+$dev->databits(8);
+$dev->parity("none");
+$dev->stopbits(1);
+
+my $rfid = Cashpoint::Client::SerialInput->new($dev, [chunk => 14]);
+$rfid->on_recv(sub {
+    my $code = shift;
+
+    if ($mode eq MODE_START) {# && $code =~ m/^#[a-z0-9]{18}$/i) {
+        $context{cashcard} = substr($code, 1);
+        read_pin();
+    }
+});
 
 ##################################################
 
@@ -105,7 +122,6 @@ sub read_pin {
 
     $cb = $pinpad->on_recv(sub {
         my $input = shift;
-
         # check if the user pressed return
         if ($input eq "#") {
 
