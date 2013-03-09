@@ -47,7 +47,7 @@ my %context = (
 my $client = Cashpoint::Client->new("http://localhost:3000");
 
 # pinpad input
-my $dev = Device::SerialPort->new('/dev/ttyUSB0') or croak $!;
+my $dev = Device::SerialPort->new('/dev/pinpad') or croak $!;
 $dev->baudrate(9600);
 $dev->databits(8);
 $dev->parity("none");
@@ -56,14 +56,14 @@ $dev->stopbits(1);
 my $pinpad = Cashpoint::Client::SerialInput->new($dev);
 
 # scanner input
-$dev = Device::SerialPort->new('/dev/ttyUSB1') or croak $!;
+$dev = Device::SerialPort->new('/dev/scanner') or croak $!;
 $dev->baudrate(9600);
 $dev->databits(8);
 $dev->parity("none");
 $dev->stopbits(1);
 
 my $scanner = Cashpoint::Client::SerialInput->new($dev);
-$scanner->on_recv sub {
+$scanner->on_recv(sub {
     my $code = shift;
 
     if ($mode eq MODE_START && $code =~ m/^#[a-z0-9]{18}$/i) {
@@ -73,7 +73,7 @@ $scanner->on_recv sub {
     } elsif ($mode eq MODE_AUTHED && $code =~ m/^F{1,2}([0-9]{8}|[0-9]{12})$/) {
         add_product($code);
     }
-}
+});
 
 # lcd output
 my $lcd = Cashpoint::Client::LCD->new('4x40');
