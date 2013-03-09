@@ -5,7 +5,6 @@ use warnings;
 
 use Carp;
 use AnyEvent;
-use AnyEvent::Run;
 
 use LCD2USB::Wrapper;
 
