@@ -108,9 +108,8 @@ sub flush {
     my $to   = $from+$self->{height}-1;
     my @visible_scrollbuffer = @scrollbuffer[$from..$to];
 
-    # flush it to the process
-    for (1..$self->{height}) {
-        l2u_write(0, $_ - 1, $visible_scrollbuffer[$_] // " " x $self->{width});
+    for (0..($self->{height} - 1)) {
+        l2u_write($_, 0, $visible_scrollbuffer[$_] // " " x $self->{width});
     }
 };
 
@@ -120,7 +119,7 @@ sub show {
 
     if ($key !~ /^\d+[clr]?e?$/) {
         carp 'invalid hash key, skipping' if $key !~ /^\d+$/;
-        next;
+        return;
     }
 
     my ($lineno, $format, $empty) = ($key =~ /^(\d+)([clr]?)(e)?$/);
@@ -164,6 +163,8 @@ sub show {
     # save the formatted line in the scrollbuffer
     $scrollbuffer[$self->{toplineptr}+$lineno-1] = $line;
     $self->{scrollbuffer} = \@scrollbuffer;
+
+    print Dumper @scrollbuffer;
 
     # write the new scrollbuffer to the display
     $self->flush;
