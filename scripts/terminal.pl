@@ -49,6 +49,7 @@ my %context = (
 
 # client library
 my $client = Cashpoint::Client->new("http://172.22.37.76:3000");
+$client->{debug} = 1;
 
 # lcd output
 my $lcd = Cashpoint::Client::LCD->new('4x40');
@@ -152,11 +153,11 @@ sub read_pin {
 
             # the pin is not saved in the context
             authenticate($pin);
+        } else {
+            $pin .= $input if $input =~ /^\d+$/;
+            $lcd->show("3ce", "*" x length $pin);
+            $timer = AnyEvent->timer(after => TIMEOUT_PIN, cb => $cancel);
         }
-
-        $pin .= $input if $input =~ /^\d+$/;
-        $lcd->show("3ce", "*" x length $pin);
-        $timer = AnyEvent->timer(after => TIMEOUT_PIN, cb => $cancel);
     });
 
     # if the user does not enter anything for more than five seconds,
@@ -170,6 +171,8 @@ sub authenticate {
     my ($s, $r) = $client->auth_by_pin($context{cashcard}, $pin);
     $lcd->show("3ce", "");
 
+    print Dumper $s, $r;
+
     if ($s eq '200') {
         # save the context information
         @context{qw/user role auth/} = (
@@ -179,10 +182,11 @@ sub authenticate {
         );
 
         # display appropriate information
-        $lcd->show("2ce", "Successfully Authorized");
+        $lcd->show("2ce", "- authorized as $r->{user}->{name} -");
+        $lcd->show("3ce", "Please start scanning your products.");
 
         # try to create a basket
-        create_basket();
+        #create_basket();
 
     } else {
         if ($s eq '401') {
