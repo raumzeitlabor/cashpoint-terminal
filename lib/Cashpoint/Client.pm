@@ -46,16 +46,15 @@ sub generic {
     my $cv = AE::cv;
     http_request(uc $method => $self->{baseurl}.$path, @$httpr, sub {
         my $body = shift;
-        $hdr = shift;
+        $hdr = shift; # used for synchronous return
 
         print Dumper $hdr, $body if $self->{debug};
 
         if ($hdr->{Status} =~ m/^20[01]/) {
             $data = from_json($body) if $body;
-            &$cb($hdr->{Status}, $data) if $cb;
-        } else {
-            &$cb($hdr->{Status}, undef) if $cb;
         }
+        $data ||= $body;
+        &$cb($hdr->{Status}, $data) if $cb;
 
         $cv->send unless $cb;
     });
