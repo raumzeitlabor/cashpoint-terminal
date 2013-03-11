@@ -50,9 +50,7 @@ sub generic {
 
         print Dumper $hdr, $body if $self->{debug};
 
-        if ($hdr->{Status} =~ m/^20[01]/) {
-            $data = from_json($body) if $body;
-        }
+        eval { $data = from_json($body) if $body; };
         $data ||= $body;
         &$cb($hdr->{Status}, $data) if $cb;
 
