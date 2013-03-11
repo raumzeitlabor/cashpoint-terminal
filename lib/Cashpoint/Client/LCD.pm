@@ -6,6 +6,7 @@ use warnings;
 use Carp;
 use AnyEvent;
 
+use Log::Log4perl qw/:easy/;
 use LCD2USB::Wrapper;
 
 use Data::Dumper;
@@ -13,14 +14,17 @@ use Data::Dumper;
 sub new {
     my ($class, $format) = @_;
 
-    my $r = l2u_open();
-    carp 'could not find a display' if ($r == -1);
+    if (l2u_open() == -1) {
+        carp 'could not find a display';
+    }
 
     carp 'invalid format' if ($format !~ /^\d+x\d+$/);
     my ($height, $width) = ($format =~ /^(\d+)x(\d+)$/);
 
+    my @empty_scrollbuffer = ('') x $height;
     my $self = {
-        scrollbuffer => [],
+        empty_scrollbuffer => \@empty_scrollbuffer,
+        scrollbuffer => \@empty_scrollbuffer,
         toplineptr => 0,
         currline   => 1,
         width      => $width,
@@ -31,6 +35,16 @@ sub new {
     return $self;
 };
 
+sub on {
+    DEBUG "LCD on";
+    l2u_brightness(30);
+}
+
+sub off {
+    DEBUG "LCD off";
+    l2u_brightness(0);
+}
+
 sub scrollbuffer_size {
     my $self = shift;
     return scalar @{$self->{scrollbuffer}};
@@ -38,10 +52,10 @@ sub scrollbuffer_size {
 
 sub reset {
     my $self = shift;
-    for (1..$self->{height}) {
-        l2u_write(0, $_ - 1, " " x $self->{width});
+    for (0..($self->{height} - 1)) {
+        l2u_write($_, 0, " " x $self->{width});
     }
-    $self->{scrollbuffer} = [];
+    $self->{scrollbuffer} = $self->{empty_scrollbuffer};
     $self->{toplineptr} = 0;
 };
 
@@ -117,12 +131,14 @@ sub show {
     my ($self, $key, $msg) = @_;
     my @scrollbuffer = @{$self->{scrollbuffer}};
 
-    if ($key !~ /^\d+[clr]?e?$/) {
+    # formatting keys (spaces added for readability):
+    # linenr(center|right|left)(erase)?(noflush)?
+    if ($key !~ /^\d+[clr]?e?n?$/) {
         carp 'invalid hash key, skipping' if $key !~ /^\d+$/;
         return;
     }
 
-    my ($lineno, $format, $empty) = ($key =~ /^(\d+)([clr]?)(e)?$/);
+    my ($lineno, $format, $empty, $noflush) = ($key =~ /^(\d+)([clr]?)(e)?(n)?$/);
 
     if ($lineno > $self->{height}) {
         carp 'invalid line numer';
@@ -137,7 +153,7 @@ sub show {
 
     # figure out what the desired line currently looks like
     # if empty was requested, we'll comply :-)
-    my $currline = $empty ? undef : $scrollbuffer[$self->{toplineptr}+$lineno-1];
+    my $currline = $empty ? '' : $scrollbuffer[$self->{toplineptr}+$lineno-1];
     $currline =  ' ' x $self->{width} unless $currline;
 
     # do the requested formatting
@@ -164,10 +180,12 @@ sub show {
     $scrollbuffer[$self->{toplineptr}+$lineno-1] = $line;
     $self->{scrollbuffer} = \@scrollbuffer;
 
-    print Dumper @scrollbuffer;
-
     # write the new scrollbuffer to the display
-    $self->flush;
+    unless ($noflush) {
+        # debug scrollbuffer
+        DEBUG "LCD: ". ($_ ? $_ : '') for (@scrollbuffer) ;
+        $self->flush unless $noflush;
+    }
 }
 
 42;
