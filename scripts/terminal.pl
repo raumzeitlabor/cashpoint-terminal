@@ -5,12 +5,16 @@ use warnings;
 
 use lib 'lib';
 
+use 5.12.0;
+
 use EV;
 use Carp;
 use AnyEvent;
 
 use Data::Dumper;
+
 use Log::Log4perl qw(:easy);
+Log::Log4perl->easy_init($DEBUG);
 
 use Device::SerialPort;
 
@@ -22,19 +26,23 @@ $| = 1;
 
 # state machine
 use constant {
-    MODE_START    => 0,
-    MODE_AUTH     => 1,
-    MODE_AUTHED   => 2,
+    MODE_START    => "MODE_START",
+    MODE_PIN      => "MODE_PIN",
+    MODE_AUTH     => "MODE_AUTH",
+    MODE_AUTHED   => "MODE_AUTHED",
 
-    TIMEOUT_PIN   => 5,     # time until the pin input will time out
-    TIMEOUT_RETRY => 5,     # time after which a failed auth can be started again
-    TIMEOUT_ERROR => 15,    # time a fatal error message will be shown
+    TIMEOUT_PIN     => 5,     # time until the pin input will time out
+    TIMEOUT_ERROR   => 10,    # time a fatal error message will be shown
+    TIMEOUT_SCANNER => 20,
 };
 
 my $mode = MODE_START;
 
 # will be used for storing timers etc; is regularly cleaned up
 my @heap = ();
+
+# will be used for timeouts
+my $timer;
 
 # contains the context of the currently auth'ed user
 my %context = (
@@ -71,17 +79,6 @@ $dev->parity("none");
 $dev->stopbits(1);
 
 my $scanner = Cashpoint::Client::SerialInput->new($dev);
-$scanner->on_recv(sub {
-    my $code = shift;
-
-    if ($mode eq MODE_START && $code =~ m/^#[a-z0-9]{18}$/i) {
-        #$context{cashcard} = substr($code, 1);
-        #read_pin();
-    } elsif ($mode eq MODE_AUTH && $code =~ m/^#[a-z0-9]{18}$/i) {
-    } elsif ($mode eq MODE_AUTHED && $code =~ m/^F{1,2}([0-9]{8}|[0-9]{12})$/) {
-        add_product($code);
-    }
-});
 
 # rfid reader
 $dev = Device::SerialPort->new('/dev/ttyUSB2') or croak $!;
@@ -91,15 +88,6 @@ $dev->parity("none");
 $dev->stopbits(1);
 
 my $rfid = Cashpoint::Client::SerialInput->new($dev, [chunk => 14]);
-$rfid->on_recv(sub {
-    my $code = shift;
-
-    # XXX: chksum prüfen
-    if ($mode eq MODE_START) {# && $code =~ m/^#[a-z0-9]{18}$/i) {
-        $context{cashcard} = $code;
-        read_pin();
-    }
-});
 
 ##################################################
 # General Flow:
@@ -114,64 +102,108 @@ $rfid->on_recv(sub {
 # 4. Each SCAN add $product to basket.
 ##################################################
 
+sub switch_mode {
+    my $mode = shift;
+    DEBUG "MODE = $mode";
+}
+
 sub start {
-    $mode = MODE_START;
+    # backlight timer
+    $timer = AnyEvent->timer(after => 5, cb => sub { $lcd->off });
+
     %context = ();
-    #$reader->reset_cb;
+
+    $lcd->on;
     $lcd->reset;
     $lcd->show("2ce", "RaumZeitLabor e.V. Cashpoint");
+
+    # disable pinpad cb
+    $pinpad->on_recv(sub {});
+
+    # enable rfid reader
+    $rfid->on_recv(sub {
+        my $raw = shift;
+
+        # first byte is start flag, last byte is end flag
+        if ($raw =~ m/^\\u0002([a-z0-9]{12})\\0003$/i) {
+            my $code = $1;
+        } else {
+            WARN "invalid rfid: ".sprintf("%x", $raw);
+            return;
+        }
+
+        if ($mode eq MODE_START) {# && $code =~ m/^#[a-z0-9]{18}$/i) {
+            $context{cashcard} = $code;
+            read_pin();
+        }
+    });
+
+    switch_mode(MODE_START);
+    INFO "ready!";
 }
 
 sub read_pin {
     my $code = shift;
-    my ($cb, $pin, $timer) = (undef, "");
+    my ($cb, $pin) = (undef, "");
 
-    $lcd->show("2ce", "Please enter your PIN:");
+    switch_mode(MODE_PIN);
+    INFO "reading pin…";
 
-    # this is called to cancel the authorization process
-    my $cancel = sub {
-        return unless $mode == MODE_AUTH;
+    # disable backlight timer
+    $timer = undef; $lcd->on;
 
-        # make sure the input receiver is disabled
-        undef $timer if $timer;
-        #$reader->reset_cb;
-    };
+    # disable rfid reader
+    $rfid->on_recv(sub {});
+
+    $lcd->show("2ce", "Speak, friend, and enter.");
+
+    $pinpad->ae->on_rtimeout(sub {
+        INFO "no activity on pinpad, timing out";
+        $pinpad->ae->on_rtimeout(undef);
+        $pinpad->ae->rtimeout(0);
+        start;
+    });
+    $pinpad->ae->rtimeout_reset;
+    $pinpad->ae->rtimeout(TIMEOUT_PIN);
 
     $cb = $pinpad->on_recv(sub {
         my $input = shift;
         # check if the user pressed return
         if ($input eq "#") {
-
-            # stop listening for input
-            &$cancel();
+            # disable pin timeout
+            $pinpad->ae->on_rtimeout(undef);
+            $pinpad->ae->rtimeout(0);
 
             # cancel if the pin was empty
             if (length $pin == 0) {
-                start();
+                WARN "pin is empty, resetting";
+                $lcd->show("2cen", "You did not enter a PIN.");
+                $lcd->show("3ce", "Please try again.");
+                $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
+                    INFO "error timeout";
+                    start;
+                });
                 return;
             }
 
             # the pin is not saved in the context
             authenticate($pin);
+
         } else {
             $pin .= $input if $input =~ /^\d+$/;
             $lcd->show("3ce", "*" x length $pin);
-            $timer = AnyEvent->timer(after => TIMEOUT_PIN, cb => $cancel);
         }
     });
-
-    # if the user does not enter anything for more than five seconds,
-    # we cancel the authorization process
-    $timer = AnyEvent->timer(after => TIMEOUT_PIN, cb => $cancel);
 };
 
 sub authenticate {
     my $pin = shift;
 
+    switch_mode(MODE_AUTH);
+    INFO "authenticating…";
+
     my ($s, $r) = $client->auth_by_pin($context{cashcard}, $pin);
     $lcd->show("3ce", "");
-
-    print Dumper $s, $r;
 
     if ($s eq '200') {
         # save the context information
@@ -182,26 +214,28 @@ sub authenticate {
         );
 
         # display appropriate information
-        $lcd->show("2ce", "- authorized as $r->{user}->{name} -");
+        $lcd->show("2cen", "- authorized as $r->{user}->{name} -");
         $lcd->show("3ce", "Please start scanning your products.");
 
-        # try to create a basket
-        #create_basket();
+        switch_mode(MODE_AUTHED);
+        create_basket();
 
     } else {
         if ($s eq '401') {
-            $lcd->show("2ce", "Authorization Failed!");
+            my $attempts = $r->{attempts_left};
+            $lcd->show("2cen", "Authorization Failed!");
+            $lcd->show("3ce", "You have ".$attempts." more tries.");
         } elsif ($s eq '403') {
-            $lcd->show("2ce", "There have been too many failed logins.");
+            $lcd->show("2cen", "There have been too many failed logins.");
             $lcd->show("3ce", "Please try again in five minutes.");
         } else {
-            $lcd->show("2ce", "Uh-oh, there seems to be a problem!");
+            $lcd->show("2cen", "Uh-oh, there seems to be a problem!");
             $lcd->show("3ce", "Please try again later. Thank you.");
         }
 
-        push @heap, AnyEvent->timer(after => TIMEOUT_RETRY, cb => sub {
-            return if $mode == MODE_START;
-            start();
+        $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
+            INFO "error timeout";
+            start;
         });
     }
 };
@@ -212,24 +246,23 @@ sub create_basket {
         my ($s, $r) = @_;
 
         if ($s eq '201') {
-            $mode = MODE_AUTHED;
             $context{basket} = $r->{id};
 
-            # if the user hasn't started scanning yet, tell him
-            push @heap, AnyEvent->timer(after => 3, cb => sub {
-                $lcd->show("2ce", "Please start scanning your products.");
+            # enable scanner cb
+            $scanner->on_recv(sub {
+                my $code = shift;
+                add_product($code);
             });
 
-        } else {
-            # this should not happen, but who knows.
-            $mode = MODE_START;
+            $lcd->show("2ce", "Please start scanning your products.");
 
-            $lcd->show("2ce", "WHY U NO WORKING");
+        } else {
+            $lcd->show("2cen", "WHY U NO WORKING");
             $lcd->show("3ce", "Sorry, please try again later.");
 
-            push @heap, AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
-                return if $mode == MODE_START;
-                start();
+            $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
+                INFO "error timeout";
+                start;
             });
         }
     });
@@ -246,6 +279,11 @@ sub add_product {
         } else {
             $lcd->show("2ce", "WHY U NO WORKING");
             $lcd->show("3ce", "Sorry, please try again later.");
+
+            $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
+                INFO "error timeout";
+                start;
+            });
         }
     });
 };
