@@ -19,7 +19,7 @@ sub new {
     $self->{method} = $method;
     $self->{fh} = $dev->{'HANDLE'};
 
-    $self->{input_handle} = AnyEvent::Handle->new(
+    $self->{ae_handle} = AnyEvent::Handle->new(
         fh => $dev->{'HANDLE'},
         on_error => sub {
             my ($handle, $fatal, $message) = @_;
@@ -42,15 +42,19 @@ sub new {
         carp "no input callback defined" unless $self->{recv_cb};
 
         # retrigger read
-        $self->{input_handle}->push_read(@{$self->{method}}, $self->{reader});
+        $self->{ae_handle}->push_read(@{$self->{method}}, $self->{reader});
     };
 
     # trigger read for the first time
-    $self->{input_handle}->push_read(@{$self->{method}}, $self->{reader});
+    $self->{ae_handle}->push_read(@{$self->{method}}, $self->{reader});
 
     bless $self, $class;
     return $self;
 };
+
+sub ae {
+    return shift->{ae_handle};
+}
 
 sub on_recv {
     my ($self, $recv_cb) = @_;
