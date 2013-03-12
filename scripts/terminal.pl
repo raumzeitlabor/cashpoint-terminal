@@ -113,22 +113,25 @@ sub start {
 
     %context = ();
 
-    $lcd->on;
     $lcd->reset;
     $lcd->show("2ce", "RaumZeitLabor e.V. Cashpoint");
 
     # disable pinpad cb
     $pinpad->on_recv(sub {});
 
+    # disable scanner cb
+    $scanner->on_recv(sub {});
+
     # enable rfid reader
     $rfid->on_recv(sub {
         my $raw = shift;
+        my $code;
 
         # first byte is start flag, last byte is end flag
-        if ($raw =~ m/^\\u0002([a-z0-9]{12})\\0003$/i) {
-            my $code = $1;
+        if ($raw =~ m/^\x02([a-f0-9]{12})\x03$/i) {
+            $code = $1;
         } else {
-            WARN "invalid rfid: ".sprintf("%x", $raw);
+            WARN "invalid rfid: ".sprintf("%s", $raw);
             return;
         }
 
