@@ -122,9 +122,14 @@ sub flush {
     my $to   = $from+$self->{height}-1;
     my @visible_scrollbuffer = @scrollbuffer[$from..$to];
 
-    for (0..($self->{height} - 1)) {
-        l2u_write($_, 0, $visible_scrollbuffer[$_] // " " x $self->{width});
+    # debug scrollbuffer
+    DEBUG "LCD: +".("-" x $self->{width})."+";
+    my $l = 0;
+    for (@visible_scrollbuffer) {
+        DEBUG "LCD: |". ($_ ? $_ : ' ' x $self->{width})."|";
+        l2u_write($l++, 0, ($_ ? $_ : ' ' x $self->{width}));
     }
+    DEBUG "LCD: +".("-" x $self->{width})."+";
 };
 
 sub show {
@@ -182,9 +187,7 @@ sub show {
 
     # write the new scrollbuffer to the display
     unless ($noflush) {
-        # debug scrollbuffer
-        DEBUG "LCD: ". ($_ ? $_ : '') for (@scrollbuffer) ;
-        $self->flush unless $noflush;
+        $self->flush;
     }
 }
 
