@@ -34,7 +34,7 @@ sub generic {
     # build request
     my $httpr = [
         headers    => \%headers,
-        timeout    => 10,
+        timeout    => 3,
     ];
 
     push @$httpr, (body => to_json($payload)) if $payload;
