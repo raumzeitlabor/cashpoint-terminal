@@ -160,6 +160,7 @@ sub read_pin {
 
     $lcd->show("2ce", "Speak, friend, and enter.");
 
+    # pinpad timeout
     $pinpad->ae->on_rtimeout(sub {
         INFO "no activity on pinpad, timing out";
         $pinpad->ae->on_rtimeout(undef);
@@ -189,6 +190,9 @@ sub read_pin {
                 return;
             }
 
+            # disable pinpad cb
+            $pinpad->on_recv(sub {});
+
             # the pin is not saved in the context
             authenticate($pin);
 
@@ -205,8 +209,11 @@ sub authenticate {
     switch_mode(MODE_AUTH);
     INFO "authenticating…";
 
+    $lcd->reset;
+    $lcd->show("2ce", "Authenticating...");
+
+    # this is synchronous
     my ($s, $r) = $client->auth_by_pin($context{cashcard}, $pin);
-    $lcd->show("3ce", "");
 
     if ($s eq '200') {
         # save the context information
@@ -217,8 +224,7 @@ sub authenticate {
         );
 
         # display appropriate information
-        $lcd->show("2cen", "- authorized as $r->{user}->{name} -");
-        $lcd->show("3ce", "Please start scanning your products.");
+        $lcd->show("2ce", "- authorized as $r->{user}->{name} -");
 
         switch_mode(MODE_AUTHED);
         create_basket();
@@ -251,13 +257,24 @@ sub create_basket {
         if ($s eq '201') {
             $context{basket} = $r->{id};
 
+            # scanner inactivity timeout
+            $scanner->ae->on_rtimeout(sub {
+                INFO "no activity on scanner, logging out";
+                $scanner->ae->on_rtimeout(undef);
+                $scanner->ae->rtimeout(0);
+                $client->logout;
+                start;
+            });
+            $scanner->ae->rtimeout_reset;
+            $scanner->ae->rtimeout(TIMEOUT_SCANNER);
+
             # enable scanner cb
             $scanner->on_recv(sub {
                 my $code = shift;
                 add_product($code);
             });
 
-            $lcd->show("2ce", "Please start scanning your products.");
+            $lcd->show("3ce", "Please start scanning your products.");
 
         } else {
             $lcd->show("2cen", "WHY U NO WORKING");
