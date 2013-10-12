@@ -5,27 +5,53 @@ use warnings;
 
 use Carp;
 
+use Moo;
 use AnyEvent;
 use AnyEvent::Handle;
 
 use Data::Dumper;
+use Log::Log4perl qw/:easy/;
 
-sub new {
-    my ($class, $dev, $method) = @_;
-    my $self = {};
+has method => (
+    is => 'ro',
+    default => sub {
+        return [line => "\r"]
+    },
+);
 
-    $self->{dev} = $dev;
-    $method ||= [line => "\r"];
-    $self->{method} = $method;
-    $self->{fh} = $dev->{'HANDLE'};
+has ae_handle => (
+    is => 'ro',
+    reader => 'ae',
+    writer => '_ae_handle',
+    init_arg => undef,
+);
 
-    $self->{ae_handle} = AnyEvent::Handle->new(
-        fh => $dev->{'HANDLE'},
+has reader => (
+    is => 'rw',
+    init_arg => undef,
+);
+
+has on_recv => (
+    is => 'rw',
+);
+
+has fh => (
+    is => 'ro',
+    required => 1,
+);
+
+sub BUILD {
+    my $self = shift;
+
+    DEBUG "DERP $self->dev";
+
+    $self->_ae_handle(AnyEvent::Handle->new(
+        fh => $self->fh,
         on_error => sub {
             my ($handle, $fatal, $message) = @_;
             if ($fatal) {
                 $handle->destroy;
-                croak "Fatal error: $message";
+                croak("Fatal error: $message");
             }
             carp "Error reading input data: $message";
         },
@@ -34,31 +60,19 @@ sub new {
             $handle->destroy;
             croak "Device disconnected.";
         },
-    );
+    ));
 
-    $self->{reader} = sub {
+    $self->reader(sub {
         my ($handle, $code) = @_;
-        $self->{recv_cb}->($code) if $self->{recv_cb};
-        carp "no input callback defined" unless $self->{recv_cb};
+        $self->on_recv->($code) if $self->on_recv;
+        carp "no input callback defined" unless $self->on_recv;
 
         # retrigger read
-        $self->{ae_handle}->push_read(@{$self->{method}}, $self->{reader});
-    };
+        $self->ae->push_read(@{$self->method}, $self->reader);
+    });
 
     # trigger read for the first time
-    $self->{ae_handle}->push_read(@{$self->{method}}, $self->{reader});
-
-    bless $self, $class;
-    return $self;
-};
-
-sub ae {
-    return shift->{ae_handle};
-}
-
-sub on_recv {
-    my ($self, $recv_cb) = @_;
-    $self->{recv_cb} = $recv_cb;
+    $self->ae->push_read(@{$self->method}, $self->reader);  
 };
 
 42;

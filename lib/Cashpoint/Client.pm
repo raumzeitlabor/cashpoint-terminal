@@ -12,6 +12,7 @@ our $VERSION = '0.01';
 
 sub new {
     my ($class, $baseurl) = @_;
+    $baseurl =~ s/\/$//;
     my $self = {
         baseurl => $baseurl,
     };
@@ -38,7 +39,7 @@ sub generic {
     ];
 
     push @$httpr, (body => to_json($payload)) if $payload;
-    print "HEADER: ".Dumper $httpr if $self->{debug};
+    print "REQUEST HEADER: ".Dumper $httpr if $self->{debug};
 
     # do the request
     my $data;
@@ -65,9 +66,9 @@ sub generic {
 }
 
 # synchronous
-sub auth_by_pin {
+sub auth_cashcard {
     my ($self, $cashcard, $pin) = @_;
-    my ($s, $r) = $self->generic(POST => '/auth', {
+    my ($s, $r) = $self->generic(POST => '/auth/cashcard', {
         code => $cashcard,
         pin  => $pin,
     });
@@ -102,7 +103,7 @@ sub add_product {
     my ($self, $name, $ean, $threshold, $cb) = @_;
     return $self->generic(POST => '/products', {
         name => $name,
-        ean  => '4029764001807',
+        ean  => $ean,
     }, $cb);
 }
 
@@ -185,6 +186,11 @@ sub create_basket {
 sub delete_basket {
     my ($self, $basket, $cb) = @_;
     return $self->generic(DELETE => "/baskets/$basket", undef, $cb);
+}
+
+sub checkout_basket {
+    my ($self, $basket, $cb) =@_;
+    return $self->generic(PUT => "/baskets/$basket/checkout", undef, $cb);
 }
 
 # delete, checkout basket

@@ -7,15 +7,20 @@ use Carp;
 use AnyEvent;
 
 use Log::Log4perl qw/:easy/;
-use LCD2USB::Wrapper;
 
 use Data::Dumper;
 
 sub new {
-    my ($class, $format) = @_;
+    my ($class, $format, %opts) = @_;
 
-    if (l2u_open() == -1) {
-        carp 'could not find a display';
+    my $debug = 0;
+    if (%opts && exists $opts{debug}) {
+        $debug = $opts{debug} 
+    }
+
+    if (!$debug) {
+        use LCD2USB::Wrapper;
+        carp 'could not find a display' if (l2u_open() == -1)
     }
 
     carp 'invalid format' if ($format !~ /^\d+x\d+$/);
@@ -29,6 +34,7 @@ sub new {
         currline   => 1,
         width      => $width,
         height     => $height,
+        debug      => $debug,
     };
 
     bless $self, $class;
@@ -37,12 +43,12 @@ sub new {
 
 sub on {
     DEBUG "LCD on";
-    l2u_brightness(30);
+    l2u_brightness(30) unless shift->{debug};
 }
 
 sub off {
     DEBUG "LCD off";
-    l2u_brightness(0);
+    l2u_brightness(0) unless shift->{debug};
 }
 
 sub scrollbuffer_size {
@@ -53,7 +59,7 @@ sub scrollbuffer_size {
 sub reset {
     my $self = shift;
     for (0..($self->{height} - 1)) {
-        l2u_write($_, 0, " " x $self->{width});
+        l2u_write($_, 0, " " x $self->{width}) unless $self->{debug};
     }
     $self->{scrollbuffer} = $self->{empty_scrollbuffer};
     $self->{toplineptr} = 0;
@@ -127,7 +133,7 @@ sub flush {
     my $l = 0;
     for (@visible_scrollbuffer) {
         DEBUG "LCD: |". ($_ ? $_ : ' ' x $self->{width})."|";
-        l2u_write($l++, 0, ($_ ? $_ : ' ' x $self->{width}));
+        l2u_write($l++, 0, ($_ ? $_ : ' ' x $self->{width})) unless $self->{debug};
     }
     DEBUG "LCD: +".("-" x $self->{width})."+";
 };

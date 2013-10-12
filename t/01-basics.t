@@ -8,7 +8,7 @@ my $client = Cashpoint::Client->new('http://localhost:3000');
 $client->{debug} = 1;
 my ($s, $r);
 
-($s, $r) = $client->auth_by_pin('0123456789abcdefgh', '242596');
+($s, $r) = $client->auth_by_pin('0123456789abcdefgh', '654321');
 ok($s eq '200' && defined $r, 'logged in');
 
 ($s, $r) = $client->add_product('Club Mate', '4029764001807');

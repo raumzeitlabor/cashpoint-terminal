@@ -7,6 +7,7 @@ license  'perl';
 
 build_requires 'Test::More';
 
+requires 'Moo';
 requires 'JSON::XS';
 requires 'Log::Log4perl';
 requires 'AnyEvent::HTTP';

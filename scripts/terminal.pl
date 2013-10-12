@@ -12,308 +12,102 @@ use Carp;
 use AnyEvent;
 
 use Data::Dumper;
+use AnyEvent::Socket;
 
 use Log::Log4perl qw(:easy);
 Log::Log4perl->easy_init($DEBUG);
 
-use Device::SerialPort;
-
+use Cashpoint::Terminal;
 use Cashpoint::Client;
 use Cashpoint::Client::LCD;
 use Cashpoint::Client::SerialInput;
 
 $| = 1;
 
-# state machine
-use constant {
-    MODE_START    => "MODE_START",
-    MODE_PIN      => "MODE_PIN",
-    MODE_AUTH     => "MODE_AUTH",
-    MODE_AUTHED   => "MODE_AUTHED",
-
-    TIMEOUT_PIN     => 5,     # time until the pin input will time out
-    TIMEOUT_ERROR   => 10,    # time a fatal error message will be shown
-    TIMEOUT_SCANNER => 20,
-};
-
-my $mode = MODE_START;
-
-# will be used for storing timers etc; is regularly cleaned up
-my @heap = ();
-
-# will be used for timeouts
-my $timer;
-
-# contains the context of the currently auth'ed user
-my %context = (
-    cashcard => undef,
-    user     => undef,
-    role     => undef,
-    basket   => undef,
-    auth     => undef,
-);
-
-##################################################
-
 # client library
 my $client = Cashpoint::Client->new("http://172.22.37.76:3000");
 $client->{debug} = 1;
 
+my ($cpd, $dev1, $dev2, $dev3);
+
+my ($lcd, $dev, $pinpad, $scanner, $rfid, $debug);
+if (exists $ENV{CASHPOINT_ENVIRONMENT} && $ENV{CASHPOINT_ENVIRONMENT} eq 'testing') {
+    use Cashpoint::Driver;
+
+    $client->{debug} = $debug = 1;
+
+    $cpd = Cashpoint::Driver->new;
+    $pinpad = Cashpoint::Client::SerialInput->new(
+        fh => $cpd->get_pinpad, method => [chunk => 1]
+    );
+    $scanner = Cashpoint::Client::SerialInput->new(
+        fh => $cpd->get_scanner
+    );
+    $rfid = Cashpoint::Client::SerialInput->new(
+        fh => $cpd->get_rfid, method => [chunk => 14]
+    );
+
+} else {
+    use Device::SerialPort;
+
+    # pinpad input
+    $dev1 = Device::SerialPort->new('/dev/ttyUSB3') or croak "pinpad: $!";
+    $dev1->baudrate(9600);
+    $dev1->databits(8);
+    $dev1->parity("none");
+    $dev1->stopbits(1);
+    
+    $pinpad = Cashpoint::Client::SerialInput->new(
+        fh => $dev1->{HANDLE}, method => [chunk => 1]
+    );
+    
+    # scanner input
+    $dev2 = Device::SerialPort->new('/dev/ttyUSB0') or croak "scanner: $!";
+    $dev2->baudrate(9600);
+    $dev2->databits(8);
+    $dev2->parity("none");
+    $dev2->stopbits(1);
+    
+    $scanner = Cashpoint::Client::SerialInput->new(
+        fh => $dev2->{HANDLE}
+    );
+    
+    # rfid reader
+    $dev3 = Device::SerialPort->new('/dev/ttyUSB2') or croak "rfid: $!";
+    $dev3->baudrate(9600);
+    $dev3->databits(8);
+    $dev3->parity("none");
+    $dev3->stopbits(1);
+    
+    $rfid = Cashpoint::Client::SerialInput->new(
+        fh => $dev3->{HANDLE}, method => [chunk => 14]
+    );
+}
+
 # lcd output
-my $lcd = Cashpoint::Client::LCD->new('4x40');
-
-# pinpad input
-my $dev = Device::SerialPort->new('/dev/ttyUSB3') or croak $!;
-$dev->baudrate(9600);
-$dev->databits(8);
-$dev->parity("none");
-$dev->stopbits(1);
-
-my $pinpad = Cashpoint::Client::SerialInput->new($dev, [chunk => 1]);
-
-# scanner input
-$dev = Device::SerialPort->new('/dev/ttyUSB0') or croak $!;
-$dev->baudrate(9600);
-$dev->databits(8);
-$dev->parity("none");
-$dev->stopbits(1);
-
-my $scanner = Cashpoint::Client::SerialInput->new($dev);
-
-# rfid reader
-$dev = Device::SerialPort->new('/dev/ttyUSB2') or croak $!;
-$dev->baudrate(9600);
-$dev->databits(8);
-$dev->parity("none");
-$dev->stopbits(1);
-
-my $rfid = Cashpoint::Client::SerialInput->new($dev, [chunk => 14]);
-
-##################################################
-# General Flow:
-# 1. Either RFID or Scanner callback gets triggered.
-#    State == MODE_START
-# 2. read_pin is called
-#    State == MODE_AUTH
-#
-#    on success:
-#    State == MODE_AUTHED
-# 3. create_basket creates an empty basket
-# 4. Each SCAN add $product to basket.
-##################################################
-
-sub switch_mode {
-    my $mode = shift;
-    DEBUG "MODE = $mode";
-}
-
-sub start {
-    # backlight timer
-    $timer = AnyEvent->timer(after => 5, cb => sub { $lcd->off });
-
-    %context = ();
-
-    $lcd->reset;
-    $lcd->show("2ce", "RaumZeitLabor e.V. Cashpoint");
-
-    # disable pinpad cb
-    $pinpad->on_recv(sub {});
-
-    # disable scanner cb
-    $scanner->on_recv(sub {});
-
-    # enable rfid reader
-    $rfid->on_recv(sub {
-        my $raw = shift;
-        my $code;
-
-        # first byte is start flag, last byte is end flag
-        if ($raw =~ m/^\x02([a-f0-9]{12})\x03$/i) {
-            $code = $1;
-        } else {
-            WARN "invalid rfid: ".sprintf("%s", $raw);
-            return;
-        }
-
-        if ($mode eq MODE_START) {# && $code =~ m/^#[a-z0-9]{18}$/i) {
-            $context{cashcard} = $code;
-            read_pin();
-        }
-    });
-
-    switch_mode(MODE_START);
-    INFO "ready!";
-}
-
-sub read_pin {
-    my $code = shift;
-    my ($cb, $pin) = (undef, "");
-
-    switch_mode(MODE_PIN);
-    INFO "reading pin…";
-
-    # disable backlight timer
-    $timer = undef; $lcd->on;
-
-    # disable rfid reader
-    $rfid->on_recv(sub {});
-
-    $lcd->show("2ce", "Speak, friend, and enter.");
-
-    # pinpad timeout
-    $pinpad->ae->on_rtimeout(sub {
-        INFO "no activity on pinpad, timing out";
-        $pinpad->ae->on_rtimeout(undef);
-        $pinpad->ae->rtimeout(0);
-        start;
-    });
-    $pinpad->ae->rtimeout_reset;
-    $pinpad->ae->rtimeout(TIMEOUT_PIN);
-
-    $cb = $pinpad->on_recv(sub {
-        my $input = shift;
-        # check if the user pressed return
-        if ($input eq "#") {
-            # disable pin timeout
-            $pinpad->ae->on_rtimeout(undef);
-            $pinpad->ae->rtimeout(0);
-
-            # cancel if the pin was empty
-            if (length $pin == 0) {
-                WARN "pin is empty, resetting";
-                $lcd->show("2cen", "You did not enter a PIN.");
-                $lcd->show("3ce", "Please try again.");
-                $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
-                    INFO "error timeout";
-                    start;
-                });
-                return;
-            }
-
-            # disable pinpad cb
-            $pinpad->on_recv(sub {});
-
-            # the pin is not saved in the context
-            authenticate($pin);
-
-        } else {
-            $pin .= $input if $input =~ /^\d+$/;
-            $lcd->show("3ce", "*" x length $pin);
-        }
-    });
-};
-
-sub authenticate {
-    my $pin = shift;
-
-    switch_mode(MODE_AUTH);
-    INFO "authenticating…";
-
-    $lcd->reset;
-    $lcd->show("2ce", "Authenticating...");
-
-    # this is synchronous
-    my ($s, $r) = $client->auth_by_pin($context{cashcard}, $pin);
-
-    if ($s eq '200') {
-        # save the context information
-        @context{qw/user role auth/} = (
-            $r->{user}->{id},
-            $r->{role},
-            $r->{auth_token}
-        );
-
-        # display appropriate information
-        $lcd->show("2ce", "- authorized as $r->{user}->{name} -");
-
-        switch_mode(MODE_AUTHED);
-        create_basket();
-
-    } else {
-        if ($s eq '401') {
-            my $attempts = $r->{attempts_left};
-            $lcd->show("2cen", "Authorization Failed!");
-            $lcd->show("3ce", "You have ".$attempts." more tries.");
-        } elsif ($s eq '403') {
-            $lcd->show("2cen", "There have been too many failed logins.");
-            $lcd->show("3ce", "Please try again in five minutes.");
-        } else {
-            $lcd->show("2cen", "Uh-oh, there seems to be a problem!");
-            $lcd->show("3ce", "Please try again later. Thank you.");
-        }
-
-        $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
-            INFO "error timeout";
-            start;
-        });
-    }
-};
-
-sub create_basket {
-    # try to create a basket
-    $client->create_basket(sub {
-        my ($s, $r) = @_;
-
-        if ($s eq '201') {
-            $context{basket} = $r->{id};
-
-            # scanner inactivity timeout
-            $scanner->ae->on_rtimeout(sub {
-                INFO "no activity on scanner, logging out";
-                $scanner->ae->on_rtimeout(undef);
-                $scanner->ae->rtimeout(0);
-                $client->logout;
-                start;
-            });
-            $scanner->ae->rtimeout_reset;
-            $scanner->ae->rtimeout(TIMEOUT_SCANNER);
-
-            # enable scanner cb
-            $scanner->on_recv(sub {
-                my $code = shift;
-                add_product($code);
-            });
-
-            $lcd->show("3ce", "Please start scanning your products.");
-
-        } else {
-            $lcd->show("2cen", "WHY U NO WORKING");
-            $lcd->show("3ce", "Sorry, please try again later.");
-
-            $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
-                INFO "error timeout";
-                start;
-            });
-        }
-    });
-};
-
-sub add_product {
-    my $code = shift;
-
-    $client->add_product($context{auth}, $context{basket}, $code, sub {
-        my ($s, $r) = @_;
-        if ($s eq '201') {
-            my $line = $lcd->append($r->{name});
-            $lcd->show($line."r", " ".$r->{price}." EUR");
-        } else {
-            $lcd->show("2ce", "WHY U NO WORKING");
-            $lcd->show("3ce", "Sorry, please try again later.");
-
-            $timer = AnyEvent->timer(after => TIMEOUT_ERROR, cb => sub {
-                INFO "error timeout";
-                start;
-            });
-        }
-    });
-};
-
-my $heap_cleaner = AnyEvent->timer(
-    interval => 60,
-    after    => 60,
-    cb       => sub { map { undef $_ unless $_ } @heap; }
+$lcd = Cashpoint::Client::LCD->new('4x40', debug => $debug);
+    
+cp_init(
+    client  => $client,
+    lcd     => $lcd,
+    rfid    => $rfid,
+    scanner => $scanner,
+    pinpad  => $pinpad
 );
 
-start();
+cp_start;
+
+if ($debug) {
+    my $w; $w = AnyEvent->timer(after => 0.5, cb => sub {
+        $cpd->rfid->push_write("\x023C10CDA84D15\x03");
+        $cpd->pinpad->push_write("123456#");
+    
+        $w = AnyEvent->timer(after => 1, cb => sub {
+            $cpd->scanner->push_write("4029764001807\r\n");
+            undef $w;
+            $cpd->pinpad->push_write("#");
+        });
+    });
+}
 
 EV::loop;
